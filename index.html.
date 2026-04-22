@@ -1,0 +1,617 @@
+import React, { useState, useEffect } from 'react';
+import { Search, TrendingUp, TrendingDown, AlertTriangle, BarChart3, DollarSign, Target, Zap, RefreshCw, Activity, Shield, Sparkles, Globe, Clock, ArrowUpRight, ArrowDownRight, History, X, Lightbulb, Layers, PieChart, Percent } from 'lucide-react';
+
+// ============================================================================
+// PERSISTENT STORAGE
+// ============================================================================
+const hasAS = typeof window !== 'undefined' && window.storage;
+const save = async (k, v) => { try { if (hasAS) await window.storage.set(k, JSON.stringify(v)); } catch(e){} };
+const load = async (k) => { try { if (hasAS) { const r = await window.storage.get(k); return r ? JSON.parse(r.value) : null; } } catch(e){} return null; };
+
+// ============================================================================
+// SCORING ENGINE — SHARED
+// ============================================================================
+const sH = (v, t) => { if (v==null||isNaN(v)) return null; if(v>=t[0])return 95;if(v>=t[1])return 85;if(v>=t[2])return 72;if(v>=t[3])return 58;if(v>=t[4])return 45;return 25; };
+const sL = (v, t) => { if (v==null||isNaN(v)) return null; if(v<=t[0])return 95;if(v<=t[1])return 85;if(v<=t[2])return 72;if(v<=t[3])return 58;if(v<=t[4])return 45;return 25; };
+const s2g = s => { if(s===null)return'N/A';if(s>=93)return'A+';if(s>=88)return'A';if(s>=83)return'A-';if(s>=78)return'B+';if(s>=73)return'B';if(s>=68)return'B-';if(s>=63)return'C+';if(s>=58)return'C';if(s>=53)return'C-';if(s>=48)return'D+';if(s>=43)return'D';if(s>=38)return'D-';return'F'; };
+const gC = g => { if(g==='N/A')return'#6b6760';const l=g[0];if(l==='A')return'#4ade80';if(l==='B')return'#86c26a';if(l==='C')return'#e0a94e';if(l==='D')return'#f08a5d';return'#ef4444'; };
+const avg = a => { const v=a.filter(x=>x!=null&&!isNaN(x));return v.length?v.reduce((a,b)=>a+b,0)/v.length:null; };
+const cR = s => { if(s===null)return{label:'NO DATA',color:'#6b6760'};if(s>=80)return{label:'STRONG BUY',color:'#22c55e'};if(s>=65)return{label:'BUY',color:'#86c26a'};if(s>=45)return{label:'HOLD',color:'#e0a94e'};if(s>=30)return{label:'SELL',color:'#f08a5d'};return{label:'STRONG SELL',color:'#ef4444'}; };
+
+// ============================================================================
+// STOCK SCORING
+// ============================================================================
+const computeStockGrades = d => {
+  if(!d) return null;
+  const vs=[sL(d.valuation?.peTrailing,[12,18,25,35,50]),sL(d.valuation?.peForward,[11,16,22,30,45]),sL(d.valuation?.pegRatio,[0.8,1.2,1.8,2.5,3.5]),sL(d.valuation?.psRatio,[1.5,3,5,8,12]),sL(d.valuation?.pbRatio,[1.5,3,5,8,12]),sL(d.valuation?.evEbitda,[8,12,16,22,30]),sL(d.valuation?.pFcf,[12,18,25,35,50])];
+  const gs=[sH(d.growth?.revenueGrowthYoY,[25,15,10,5,2]),sH(d.growth?.revenueGrowth3YAvg,[22,14,9,5,2]),sH(d.growth?.revenueGrowth5YAvg,[20,13,8,4,1]),sH(d.growth?.epsGrowthYoY,[30,18,12,6,2]),sH(d.growth?.epsGrowthForward,[25,15,10,5,2]),sH(d.growth?.fcfGrowthYoY,[25,15,10,5,2]),sH(d.growth?.ebitdaGrowthYoY,[25,15,10,5,2])];
+  const ps=[sH(d.profitability?.grossMargin,[55,42,32,22,12]),sH(d.profitability?.operatingMargin,[25,17,12,7,2]),sH(d.profitability?.netMargin,[20,14,9,5,1]),sH(d.profitability?.roe,[25,17,12,7,3]),sH(d.profitability?.roa,[15,9,6,3,1]),sH(d.profitability?.roic,[20,13,9,5,2]),sH(d.profitability?.fcfMargin,[20,13,8,4,1])];
+  const m=d.momentum||{};const rel=(m.return1Y!=null&&m.sp500Return1Y!=null)?m.return1Y-m.sp500Return1Y:null;
+  const ms=[sH(m.return3M,[18,10,4,0,-5]),sH(m.return6M,[28,15,8,0,-10]),sH(m.return9M,[40,22,10,0,-12]),sH(m.return1Y,[45,25,12,0,-15]),sH(rel,[20,10,3,-5,-15])];
+  const r=d.revisions||{};const rr=(r.upwardRevisions90d+r.downwardRevisions90d>0)?r.upwardRevisions90d/(r.upwardRevisions90d+r.downwardRevisions90d):null;
+  const rs=[sH(rr,[0.85,0.70,0.55,0.45,0.30]),sH(r.fy1EpsRevisionPercent,[4,2,0.5,-1,-3]),sH(r.fy2EpsRevisionPercent,[4,2,0.5,-1,-3])];
+  const vS=avg(vs),gS=avg(gs),pS=avg(ps),mS=avg(ms),rS=avg(rs);
+  const comp=avg([vS,gS,pS,mS,rS]);
+  return{valuation:{score:vS,grade:s2g(vS),ms:vs},growth:{score:gS,grade:s2g(gS),ms:gs},profitability:{score:pS,grade:s2g(pS),ms:ps},momentum:{score:mS,grade:s2g(mS),ms:ms},revisions:{score:rS,grade:s2g(rS),ms:rs},composite:{score:comp,grade:s2g(comp),rating:cR(comp)}};
+};
+
+// ============================================================================
+// ETF SCORING
+// ============================================================================
+const computeEtfGrades = d => {
+  if(!d) return null;
+  // Cost & Structure
+  const cs=[sL(d.cost?.expenseRatio,[0.06,0.15,0.35,0.60,0.90]),sH(d.cost?.aum,[50,20,5,1,0.2]),sL(d.cost?.spread,[0.02,0.05,0.10,0.20,0.50]),sL(d.cost?.trackingError,[0.05,0.15,0.30,0.60,1.0])];
+  // Performance
+  const rel1Y=(d.performance?.return1Y!=null&&d.performance?.benchReturn1Y!=null)?d.performance.return1Y-d.performance.benchReturn1Y:null;
+  const rel3Y=(d.performance?.return3YAnn!=null&&d.performance?.benchReturn3YAnn!=null)?d.performance.return3YAnn-d.performance.benchReturn3YAnn:null;
+  const pfs=[sH(d.performance?.return1Y,[25,12,5,0,-10]),sH(d.performance?.return3YAnn,[18,10,5,0,-5]),sH(d.performance?.return5YAnn,[16,10,6,2,-3]),sH(rel1Y,[5,2,0,-2,-5]),sH(rel3Y,[3,1,0,-1.5,-4])];
+  // Risk
+  const rks=[sH(d.risk?.sharpeRatio,[1.5,1.0,0.7,0.4,0.1]),sH(d.risk?.sortinoRatio,[2.0,1.3,0.8,0.4,0.1]),sL(d.risk?.maxDrawdown,[-5,-10,-18,-28,-40]),sL(d.risk?.stdDev,[8,12,16,22,30]),sL(d.risk?.beta,[0.6,0.8,1.0,1.2,1.5])];
+  // Income
+  const is=[sH(d.income?.distributionYield,[5,3.5,2.5,1.5,0.5]),sH(d.income?.yieldGrowth3Y,[8,5,2,0,-2]),sH(d.income?.yieldGrowth5Y,[7,4,2,0,-2]),sL(d.income?.yieldVolatility,[5,10,20,35,50])];
+  // Holdings Quality
+  const hs=[sH(d.holdings?.wtdRoe,[22,16,11,6,2]),sH(d.holdings?.wtdRoic,[18,13,9,5,1]),sH(d.holdings?.wtdFcfMargin,[18,12,7,3,0]),sL(d.holdings?.concentration,[25,35,45,60,75]),sH(d.holdings?.numHoldings==null?null:(d.holdings.numHoldings>=500?95:d.holdings.numHoldings>=200?85:d.holdings.numHoldings>=80?72:d.holdings.numHoldings>=30?58:45),[95,85,72,58,45])];
+  const cS=avg(cs),pfS=avg(pfs),rkS=avg(rks),iS=avg(is),hS=avg(hs);
+  const comp=avg([cS,pfS,rkS,iS,hS]);
+  return{cost:{score:cS,grade:s2g(cS),ms:cs},performance:{score:pfS,grade:s2g(pfS),ms:pfs},risk:{score:rkS,grade:s2g(rkS),ms:rks},income:{score:iS,grade:s2g(iS),ms:is},holdings:{score:hS,grade:s2g(hS),ms:hs},composite:{score:comp,grade:s2g(comp),rating:cR(comp)}};
+};
+
+// ============================================================================
+// DATA FETCHERS
+// ============================================================================
+const fetchStockData = async (ticker) => {
+  const schema = `{"ticker":"string","companyName":"string","sector":"string","industry":"string","description":"string (1-2 sentences)","assetType":"Stock","price":"number","priceChange":"number","priceChangePercent":"number","marketCap":"number (billions USD)","week52High":"number","week52Low":"number","beta":"number","valuation":{"peTrailing":"number|null","peForward":"number|null","pegRatio":"number|null","psRatio":"number|null","pbRatio":"number|null","evEbitda":"number|null","pFcf":"number|null","sectorPe":"number|null","sectorPs":"number|null"},"growth":{"revenueGrowthYoY":"percent","revenueGrowth3YAvg":"percent","revenueGrowth5YAvg":"percent","epsGrowthYoY":"percent","epsGrowthForward":"percent","fcfGrowthYoY":"percent","ebitdaGrowthYoY":"percent"},"profitability":{"grossMargin":"percent","operatingMargin":"percent","netMargin":"percent","roe":"percent","roa":"percent","roic":"percent","fcfMargin":"percent"},"momentum":{"return1M":"percent","return3M":"percent","return6M":"percent","return9M":"percent","return1Y":"percent","returnYTD":"percent","sp500Return1Y":"percent"},"revisions":{"upwardRevisions90d":"count","downwardRevisions90d":"count","fy1EpsRevisionPercent":"percent","fy2EpsRevisionPercent":"percent"},"dividend":{"yield":"percent|null","annualDividend":"USD|null","payoutRatio":"percent|null","dividendGrowth5Y":"percent|null","consecutiveYearsGrowth":"number|null","frequency":"string|null","nextExDate":"YYYY-MM-DD|null"},"analyst":{"consensus":"string","priceTarget":"number","priceTargetHigh":"number","priceTargetLow":"number","numAnalysts":"number","strongBuy":"number","buy":"number","hold":"number","sell":"number","strongSell":"number"},"keyMetrics":{"debtToEquity":"number|null","currentRatio":"number|null","shortInterestPercent":"percent|null","institutionalOwnership":"percent|null","insiderOwnership":"percent|null"},"strengths":["3-5 short strings"],"risks":["3-5 short strings"],"dataAsOf":"YYYY-MM-DD"}`;
+  const prompt = `Research stock ticker ${ticker.toUpperCase()} using web search. Pull current data from Yahoo Finance, Seeking Alpha, Finviz, MarketWatch. Return ONLY a JSON object matching this schema with no preamble:\n\n${schema}\n\nAll percents as numbers. Market cap in billions. Use null for unavailable data. If invalid ticker return {"error":"ticker not found"}. IMPORTANT: set assetType to "Stock".`;
+  const response = await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:4000,tools:[{type:"web_search_20250305",name:"web_search"}],messages:[{role:"user",content:prompt}]})});
+  if(!response.ok) throw new Error(`API error: ${response.status}`);
+  const result = await response.json();
+  const text = result.content.filter(b=>b.type==="text").map(b=>b.text).join("\n");
+  let cleaned = text.replace(/```json|```/g,"").trim();
+  const match = cleaned.match(/\{[\s\S]*\}/);
+  if(match) cleaned=match[0];
+  const parsed = JSON.parse(cleaned);
+  if(parsed.error) throw new Error(parsed.error);
+  return parsed;
+};
+
+const fetchEtfData = async (ticker) => {
+  const schema = `{"ticker":"string","fundName":"string","category":"string","strategy":"string","description":"string (2-3 sentences covering what it holds and its objective)","assetType":"ETF","issuer":"string","inceptionDate":"YYYY-MM-DD","price":"number","priceChange":"number","priceChangePercent":"number","nav":"number|null","premium":"percent|null","week52High":"number","week52Low":"number","cost":{"expenseRatio":"percent","aum":"number (billions USD)","avgVolume":"number (shares)","spread":"percent|null","trackingError":"percent|null"},"performance":{"return1M":"percent","return3M":"percent","return6M":"percent","returnYTD":"percent","return1Y":"percent","return3YAnn":"percent","return5YAnn":"percent","return10YAnn":"percent|null","benchReturn1Y":"percent (primary benchmark 1Y return)","benchReturn3YAnn":"percent|null","benchmarkName":"string"},"risk":{"sharpeRatio":"number (3Y)","sortinoRatio":"number (3Y)|null","maxDrawdown":"percent (worst peak-to-trough drawdown since inception or 5Y)","stdDev":"percent (3Y annualized)","beta":"number (vs S&P 500)"},"income":{"distributionYield":"percent","secYield":"percent|null","distributionFrequency":"string","lastDistribution":"USD","lastExDate":"YYYY-MM-DD|null","yieldGrowth3Y":"percent|null","yieldGrowth5Y":"percent|null","yieldVolatility":"percent|null (coefficient of variation of annual yields)"},"holdings":{"numHoldings":"number","top10Pct":"percent","concentration":"percent (top 10 weight)","turnover":"percent|null","wtdPe":"number|null","wtdPb":"number|null","wtdRoe":"percent|null","wtdRoic":"percent|null","wtdFcfMargin":"percent|null","topHoldings":[{"name":"string","ticker":"string","weight":"percent"}],"sectorBreakdown":[{"sector":"string","weight":"percent"}]},"strengths":["3-5 short strings"],"risks":["3-5 short strings"],"competitorETFs":["3-5 ticker strings of similar ETFs"],"dataAsOf":"YYYY-MM-DD"}`;
+  const prompt = `Research ETF ticker ${ticker.toUpperCase()} using web search extensively. Pull current data from etf.com, ETFdb.com, Morningstar, Yahoo Finance, Seeking Alpha. Return ONLY a JSON object matching this schema with no preamble:\n\n${schema}\n\nAll percents as numbers (e.g. 0.06 for 0.06%). AUM in billions. Use null for unavailable data. If invalid ticker return {"error":"ticker not found"}. IMPORTANT: set assetType to "ETF". For topHoldings return top 10. For sectorBreakdown return all sectors with weight > 1%.`;
+  const response = await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:5000,tools:[{type:"web_search_20250305",name:"web_search"}],messages:[{role:"user",content:prompt}]})});
+  if(!response.ok) throw new Error(`API error: ${response.status}`);
+  const result = await response.json();
+  const text = result.content.filter(b=>b.type==="text").map(b=>b.text).join("\n");
+  let cleaned = text.replace(/```json|```/g,"").trim();
+  const match = cleaned.match(/\{[\s\S]*\}/);
+  if(match) cleaned=match[0];
+  const parsed = JSON.parse(cleaned);
+  if(parsed.error) throw new Error(parsed.error);
+  return parsed;
+};
+
+const detectAndFetch = async (ticker) => {
+  // First do a quick detection call
+  const detectPrompt = `Is the ticker "${ticker.toUpperCase()}" a Stock or an ETF/Fund? Use web search if unsure. Respond with ONLY the word "Stock" or "ETF" and nothing else.`;
+  const dr = await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:50,tools:[{type:"web_search_20250305",name:"web_search"}],messages:[{role:"user",content:detectPrompt}]})});
+  if(!dr.ok) throw new Error(`Detection API error: ${dr.status}`);
+  const dRes = await dr.json();
+  const dText = dRes.content.filter(b=>b.type==="text").map(b=>b.text).join("").trim().toUpperCase();
+  const isEtf = dText.includes("ETF");
+  if(isEtf) return await fetchEtfData(ticker);
+  return await fetchStockData(ticker);
+};
+
+const fetchMarketIdeas = async () => {
+  const today = new Date().toISOString().split('T')[0];
+  const prompt = `You are a forward-looking market research analyst. Today is ${today}. Use web search extensively to scan current geopolitical developments, upcoming catalysts in next 1-4 weeks, commodity shifts, sector rotation, regulatory developments, and thematic trends. Generate exactly 12 FORWARD-LOOKING investment ideas. Mix: 7 individual stocks, 5 ETFs. Cover at least 6 different themes. Include at least 1 short idea and 2 income/dividend ideas. Return ONLY a JSON array:\n[{"ticker":"string","name":"string","type":"Stock|ETF","theme":"2-4 words","catalyst":"1 sentence with timing","thesis":"2 sentences","timeHorizon":"string","riskLevel":"Low|Medium|High","direction":"Long|Short"}]`;
+  const response = await fetch("https://api.anthropic.com/v1/messages",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({model:"claude-sonnet-4-20250514",max_tokens:6000,tools:[{type:"web_search_20250305",name:"web_search"}],messages:[{role:"user",content:prompt}]})});
+  if(!response.ok) throw new Error(`API error: ${response.status}`);
+  const result = await response.json();
+  const text = result.content.filter(b=>b.type==="text").map(b=>b.text).join("\n");
+  let cleaned = text.replace(/```json|```/g,"").trim();
+  const match = cleaned.match(/\[[\s\S]*\]/);
+  if(match) cleaned=match[0];
+  return JSON.parse(cleaned);
+};
+
+// ============================================================================
+// UI COMPONENTS
+// ============================================================================
+const GB = ({grade,size='md'}) => {
+  const sz={sm:'w-12 h-12 text-xl',md:'w-20 h-20 text-3xl',lg:'w-32 h-32 text-6xl'};
+  const c=gC(grade);
+  return <div className={`${sz[size]} flex items-center justify-center rounded-lg font-bold`} style={{backgroundColor:`${c}15`,border:`2px solid ${c}`,color:c,fontFamily:'Fraunces,serif'}}>{grade}</div>;
+};
+
+const MR = ({label,value,unit='',score,benchmark,highlight}) => {
+  const grade=score!=null?s2g(score):null;const c=grade?gC(grade):'#6b6760';
+  const dv=value==null||isNaN(value)?'N/A':typeof value==='number'?value.toFixed(unit==='%'?2:value>100?1:2):value;
+  return(
+    <div className={`grid grid-cols-12 gap-3 py-3 border-b border-stone-800 items-center ${highlight?'bg-amber-500/5':''}`}>
+      <div className="col-span-5 text-sm text-stone-300" style={{fontFamily:'Fraunces,serif'}}>{label}</div>
+      <div className="col-span-3 text-right text-stone-100" style={{fontFamily:'JetBrains Mono,monospace'}}>{dv}{unit}</div>
+      <div className="col-span-2 text-right text-xs text-stone-500" style={{fontFamily:'JetBrains Mono,monospace'}}>
+        {benchmark!=null?`vs ${typeof benchmark==='number'?benchmark.toFixed(1):benchmark}${unit}`:''}
+      </div>
+      <div className="col-span-2 flex justify-end">
+        {grade&&<div className="px-2 py-0.5 rounded text-xs font-bold" style={{backgroundColor:`${c}20`,color:c,fontFamily:'Fraunces,serif'}}>{grade}</div>}
+      </div>
+    </div>
+  );
+};
+
+const FC = ({icon:Icon,title,grade,score,description,onClick,isActive,metricCount}) => {
+  const c=gC(grade);
+  return(
+    <button onClick={onClick} className={`text-left p-5 rounded-lg border transition-all ${isActive?'bg-stone-900':'bg-stone-950 hover:bg-stone-900'}`} style={{borderColor:isActive?c:'#292524'}}>
+      <div className="flex items-start justify-between mb-3"><Icon size={20} style={{color:c}}/><GB grade={grade} size="sm"/></div>
+      <div className="text-sm uppercase tracking-widest text-stone-400 mb-1" style={{fontFamily:'JetBrains Mono,monospace'}}>{title}</div>
+      <div className="text-xs text-stone-500 mb-3">{description}</div>
+      <div className="flex items-center justify-between text-xs">
+        <span className="text-stone-500" style={{fontFamily:'JetBrains Mono,monospace'}}>{score!=null?`${score.toFixed(0)}/100`:'NO DATA'}</span>
+        <span className="text-stone-600">{metricCount} metrics</span>
+      </div>
+    </button>
+  );
+};
+
+const Gauge = ({score,rating,grade}) => {
+  const pct=score!=null?Math.max(0,Math.min(100,score)):0;const angle=(pct/100)*180-90;
+  return(
+    <div className="relative w-full max-w-md mx-auto">
+      <svg viewBox="0 0 200 130" className="w-full">
+        <defs><linearGradient id="gg" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stopColor="#ef4444"/><stop offset="30%" stopColor="#f08a5d"/><stop offset="50%" stopColor="#e0a94e"/><stop offset="70%" stopColor="#86c26a"/><stop offset="100%" stopColor="#22c55e"/></linearGradient></defs>
+        <path d="M 20 100 A 80 80 0 0 1 180 100" stroke="#292524" strokeWidth="12" fill="none" strokeLinecap="round"/>
+        <path d="M 20 100 A 80 80 0 0 1 180 100" stroke="url(#gg)" strokeWidth="12" fill="none" strokeLinecap="round" strokeDasharray={`${(pct/100)*251} 251`}/>
+        <line x1="100" y1="100" x2={100+65*Math.cos((angle*Math.PI)/180)} y2={100+65*Math.sin((angle*Math.PI)/180)} stroke="#f5f5f4" strokeWidth="2" strokeLinecap="round"/>
+        <circle cx="100" cy="100" r="5" fill="#f5f5f4"/>
+        <text x="20" y="120" fontSize="7" fill="#6b6760" fontFamily="JetBrains Mono">STRONG SELL</text>
+        <text x="168" y="120" fontSize="7" fill="#6b6760" fontFamily="JetBrains Mono">STRONG BUY</text>
+      </svg>
+      <div className="text-center mt-2">
+        <div className="text-5xl font-bold mb-1" style={{color:rating.color,fontFamily:'Fraunces,serif'}}>{grade}</div>
+        <div className="text-sm font-bold tracking-widest" style={{color:rating.color,fontFamily:'JetBrains Mono,monospace'}}>{rating.label}</div>
+        <div className="text-xs text-stone-500 mt-1" style={{fontFamily:'JetBrains Mono,monospace'}}>Composite: {score!=null?score.toFixed(1):'N/A'} / 100</div>
+      </div>
+    </div>
+  );
+};
+
+const AnalystBar = ({analyst}) => {
+  const total=(analyst.strongBuy||0)+(analyst.buy||0)+(analyst.hold||0)+(analyst.sell||0)+(analyst.strongSell||0);
+  if(total===0) return null;
+  const segs=[{l:'Strong Buy',c:analyst.strongBuy,color:'#22c55e'},{l:'Buy',c:analyst.buy,color:'#86c26a'},{l:'Hold',c:analyst.hold,color:'#e0a94e'},{l:'Sell',c:analyst.sell,color:'#f08a5d'},{l:'Strong Sell',c:analyst.strongSell,color:'#ef4444'}];
+  return(
+    <div>
+      <div className="flex h-3 rounded-full overflow-hidden mb-3">{segs.map(s=>s.c>0&&<div key={s.l} style={{width:`${(s.c/total)*100}%`,backgroundColor:s.color}} />)}</div>
+      <div className="grid grid-cols-5 gap-2 text-center">{segs.map(s=><div key={s.l}><div className="text-lg font-bold" style={{color:s.color,fontFamily:'Fraunces,serif'}}>{s.c||0}</div><div className="text-xs text-stone-500" style={{fontFamily:'JetBrains Mono,monospace'}}>{s.l}</div></div>)}</div>
+    </div>
+  );
+};
+
+const IdeaCard = ({idea,onAnalyze}) => {
+  const rc=idea.riskLevel==='Low'?'#86c26a':idea.riskLevel==='Medium'?'#e0a94e':'#f08a5d';
+  const dc=idea.direction==='Short'?'#ef4444':'#4ade80';const DI=idea.direction==='Short'?ArrowDownRight:ArrowUpRight;
+  return(
+    <div className="bg-stone-950 border border-stone-800 rounded-lg p-5 hover:border-amber-700/50 transition flex flex-col">
+      <div className="flex items-start justify-between mb-2">
+        <div><div className="flex items-center gap-2"><span className="text-xl font-bold" style={{fontFamily:'Fraunces,serif'}}>{idea.ticker}</span><span className="text-xs px-1.5 py-0.5 rounded bg-stone-800 text-stone-400" style={{fontFamily:'JetBrains Mono,monospace'}}>{idea.type}</span></div><div className="text-xs text-stone-500 mt-0.5">{idea.name}</div></div>
+        <div className="flex items-center gap-1 text-xs" style={{color:dc,fontFamily:'JetBrains Mono,monospace'}}><DI size={14}/>{idea.direction?.toUpperCase()}</div>
+      </div>
+      <div className="inline-block self-start text-xs px-2 py-0.5 rounded mb-3" style={{background:'rgba(224,169,78,0.15)',color:'#e0a94e',fontFamily:'JetBrains Mono,monospace'}}>{idea.theme}</div>
+      <div className="text-xs text-stone-300 mb-2 leading-relaxed"><span className="text-amber-400 font-bold" style={{fontFamily:'JetBrains Mono,monospace'}}>CATALYST: </span>{idea.catalyst}</div>
+      <div className="text-xs text-stone-400 mb-4 leading-relaxed flex-grow">{idea.thesis}</div>
+      <div className="flex items-center justify-between pt-3 border-t border-stone-800">
+        <div className="flex items-center gap-3 text-xs" style={{fontFamily:'JetBrains Mono,monospace'}}><span className="flex items-center gap-1 text-stone-500"><Clock size={12}/>{idea.timeHorizon}</span><span style={{color:rc}}>{idea.riskLevel} Risk</span></div>
+        <button onClick={()=>onAnalyze(idea.ticker)} className="text-xs px-3 py-1 rounded hover:bg-amber-500/20 transition flex items-center gap-1" style={{color:'#e0a94e',fontFamily:'JetBrains Mono,monospace'}}>Analyze →</button>
+      </div>
+    </div>
+  );
+};
+
+const SectorBar = ({sectors}) => {
+  if(!sectors||!sectors.length) return null;
+  const colors=['#4ade80','#86c26a','#e0a94e','#f08a5d','#ef4444','#a78bfa','#60a5fa','#f472b6','#34d399','#fbbf24','#fb923c'];
+  return(
+    <div>
+      <div className="flex h-4 rounded-full overflow-hidden mb-3">{sectors.map((s,i)=><div key={s.sector} style={{width:`${s.weight}%`,backgroundColor:colors[i%colors.length]}} title={`${s.sector}: ${s.weight}%`}/>)}</div>
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">{sectors.map((s,i)=><div key={s.sector} className="flex items-center gap-2 text-xs"><div className="w-2.5 h-2.5 rounded-sm flex-shrink-0" style={{backgroundColor:colors[i%colors.length]}}/><span className="text-stone-400 truncate">{s.sector}</span><span className="text-stone-200 ml-auto" style={{fontFamily:'JetBrains Mono,monospace'}}>{s.weight?.toFixed(1)}%</span></div>)}</div>
+    </div>
+  );
+};
+
+// ============================================================================
+// MAIN APP
+// ============================================================================
+const QUICK = ['AAPL','MSFT','NVDA','SCHD','JEPI','VOO','QQQ','ARCC','VTI','O'];
+
+const App = () => {
+  const [input,setInput]=useState('');
+  const [ticker,setTicker]=useState(null);
+  const [loading,setLoading]=useState(false);
+  const [data,setData]=useState(null);
+  const [error,setError]=useState(null);
+  const [af,setAf]=useState(null);
+  const [showMeth,setShowMeth]=useState(false);
+  const [mi,setMi]=useState(null);
+  const [miL,setMiL]=useState(false);
+  const [miE,setMiE]=useState(null);
+  const [miTs,setMiTs]=useState(null);
+  const [miF,setMiF]=useState('all');
+  const [recent,setRecent]=useState([]);
+
+  useEffect(()=>{
+    const link=document.createElement('link');link.href='https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,400;0,9..144,600;0,9..144,700;0,9..144,900;1,9..144,400&family=JetBrains+Mono:wght@400;500;700&display=swap';link.rel='stylesheet';document.head.appendChild(link);
+    (async()=>{
+      const c=await load('market_ideas');if(c?.timestamp&&(Date.now()-c.timestamp)/(1e3*3600)<24){setMi(c.ideas);setMiTs(c.timestamp);}
+      const r=await load('recent_analyses');if(r&&Array.isArray(r))setRecent(r);
+    })();
+  },[]);
+
+  const loadIdeas = async (force=false)=>{
+    if(!force){const c=await load('market_ideas');if(c&&(Date.now()-c.timestamp)/(1e3*3600)<24){setMi(c.ideas);setMiTs(c.timestamp);return;}}
+    setMiL(true);setMiE(null);
+    try{const ideas=await fetchMarketIdeas();const ts=Date.now();setMi(ideas);setMiTs(ts);await save('market_ideas',{ideas,timestamp:ts});}catch(e){setMiE(e.message||'Failed');}finally{setMiL(false);}
+  };
+
+  const saveRecent = async (result,grades,isEtf)=>{
+    const entry={ticker:result.ticker||result.ticker,name:isEtf?result.fundName:result.companyName,price:result.price,priceChangePercent:result.priceChangePercent,compositeGrade:grades.composite.grade,ratingLabel:grades.composite.rating.label,ratingColor:grades.composite.rating.color,isEtf,timestamp:Date.now()};
+    const existing=(await load('recent_analyses'))||[];
+    const updated=[entry,...existing.filter(e=>e.ticker!==entry.ticker)].slice(0,20);
+    setRecent(updated);await save('recent_analyses',updated);
+  };
+
+  const clearRecent = async ()=>{setRecent([]);await save('recent_analyses',[]);};
+
+  const run = async (sym)=>{
+    const t=sym.toUpperCase().trim();if(!t)return;
+    setTicker(t);setInput(t);setLoading(true);setError(null);setData(null);setAf(null);
+    try{
+      const result=await detectAndFetch(t);
+      setData(result);
+      const isEtf=result.assetType==='ETF';
+      const g=isEtf?computeEtfGrades(result):computeStockGrades(result);
+      if(g)await saveRecent(result,g,isEtf);
+    }catch(e){setError(e.message||'Failed to fetch data');}finally{setLoading(false);}
+  };
+
+  const isEtf=data?.assetType==='ETF';
+  const grades=data?(isEtf?computeEtfGrades(data):computeStockGrades(data)):null;
+  const fmtAge=ts=>{if(!ts)return'';const m=Math.floor((Date.now()-ts)/(6e4));if(m<60)return`${m}m ago`;const h=Math.floor(m/60);if(h<24)return`${h}h ago`;return`${Math.floor(h/24)}d ago`;};
+  const filteredIdeas=mi?.filter(i=>{if(miF==='all')return true;if(miF==='stocks')return i.type==='Stock';if(miF==='etfs')return i.type==='ETF';if(miF==='long')return i.direction==='Long';if(miF==='short')return i.direction==='Short';return true;});
+
+  // ETF factor config
+  const etfFactors=[
+    {key:'cost',icon:Percent,title:'Cost & Structure',desc:'Expense ratio, AUM, liquidity',count:4},
+    {key:'performance',icon:TrendingUp,title:'Performance',desc:'Returns vs benchmark',count:5},
+    {key:'risk',icon:Shield,title:'Risk',desc:'Sharpe, drawdown, volatility',count:5},
+    {key:'income',icon:DollarSign,title:'Income',desc:'Yield, distribution growth',count:4},
+    {key:'holdings',icon:Layers,title:'Holdings Quality',desc:'Weighted fundamentals',count:5},
+  ];
+  // Stock factor config
+  const stockFactors=[
+    {key:'valuation',icon:DollarSign,title:'Valuation',desc:'Price vs fundamentals',count:7},
+    {key:'growth',icon:TrendingUp,title:'Growth',desc:'Top & bottom line trajectory',count:7},
+    {key:'profitability',icon:Activity,title:'Profitability',desc:'Margins & capital efficiency',count:7},
+    {key:'momentum',icon:Zap,title:'Momentum',desc:'Price performance',count:5},
+    {key:'revisions',icon:Target,title:'Revisions',desc:'Analyst estimate changes',count:3},
+  ];
+
+  const factors=isEtf?etfFactors:stockFactors;
+
+  return(
+    <div className="min-h-screen bg-stone-950 text-stone-100" style={{fontFamily:'Fraunces,serif'}}>
+      <header className="border-b border-stone-800 bg-stone-950 sticky top-0 z-10 backdrop-blur-sm">
+        <div className="max-w-7xl mx-auto px-6 py-5 flex items-center justify-between flex-wrap gap-4">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded flex items-center justify-center" style={{background:'linear-gradient(135deg,#e0a94e,#c08a2e)'}}><Sparkles size={20} className="text-stone-950"/></div>
+            <div><div className="text-2xl font-bold" style={{fontFamily:'Fraunces,serif'}}>StockGrade</div><div className="text-xs uppercase tracking-widest text-stone-500" style={{fontFamily:'JetBrains Mono,monospace'}}>Stocks & ETFs Quant Rating Engine</div></div>
+          </div>
+          <button onClick={()=>setShowMeth(!showMeth)} className="text-xs uppercase tracking-widest text-stone-400 hover:text-amber-400 transition" style={{fontFamily:'JetBrains Mono,monospace'}}>Methodology {showMeth?'▲':'▼'}</button>
+        </div>
+      </header>
+
+      {showMeth&&(
+        <div className="border-b border-stone-800 bg-stone-900/50">
+          <div className="max-w-7xl mx-auto px-6 py-6 text-sm text-stone-300 leading-relaxed space-y-3">
+            <p><strong className="text-amber-400">Stocks</strong> are scored across five factors: Valuation (7 metrics), Growth (7), Profitability (7), Momentum (5), and EPS Revisions (3). Each metric is scored 0 to 100 against calibrated thresholds and averaged into a factor grade from A+ to F. The composite blends all five equally.</p>
+            <p><strong className="text-amber-400">ETFs</strong> use a separate five-factor model designed for funds: Cost and Structure (expense ratio, AUM, spread, tracking error), Performance (absolute and relative returns vs benchmark), Risk (Sharpe, Sortino, max drawdown, volatility, beta), Income (distribution yield, yield growth, yield consistency), and Holdings Quality (weighted ROE, ROIC, FCF margin, concentration, diversification). ETF thresholds are calibrated to fund universe norms, not individual stock benchmarks.</p>
+            <p>Auto-detection determines whether a ticker is a stock or ETF before pulling the appropriate data set. Market Intelligence scans geopolitical and macro catalysts for forward-looking ideas, refreshed every 24 hours.</p>
+          </div>
+        </div>
+      )}
+
+      <main className="max-w-7xl mx-auto px-6 py-8">
+        {/* SEARCH */}
+        <div className="mb-6">
+          <div className="flex gap-3 mb-4">
+            <div className="flex-1 relative">
+              <Search size={18} className="absolute left-4 top-1/2 -translate-y-1/2 text-stone-500"/>
+              <input type="text" value={input} onChange={e=>setInput(e.target.value.toUpperCase())} onKeyDown={e=>e.key==='Enter'&&run(input)} placeholder="Enter any stock or ETF ticker..." className="w-full bg-stone-900 border border-stone-800 rounded-lg pl-12 pr-4 py-4 text-lg tracking-wider focus:outline-none focus:border-amber-500 transition" style={{fontFamily:'JetBrains Mono,monospace'}}/>
+            </div>
+            <button onClick={()=>run(input)} disabled={loading||!input} className="px-8 py-4 rounded-lg font-bold uppercase tracking-widest text-sm transition disabled:opacity-40" style={{background:'linear-gradient(135deg,#e0a94e,#c08a2e)',color:'#0c0a09',fontFamily:'JetBrains Mono,monospace'}}>{loading?<RefreshCw size={18} className="animate-spin"/>:'Analyze'}</button>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <span className="text-xs uppercase tracking-widest text-stone-500 self-center mr-2" style={{fontFamily:'JetBrains Mono,monospace'}}>Quick:</span>
+            {QUICK.map(s=><button key={s} onClick={()=>run(s)} className="px-3 py-1.5 text-xs bg-stone-900 hover:bg-stone-800 border border-stone-800 rounded transition" style={{fontFamily:'JetBrains Mono,monospace'}}>{s}</button>)}
+          </div>
+        </div>
+
+        {/* MARKET INTELLIGENCE */}
+        <div className="mb-6 bg-gradient-to-br from-stone-900/60 to-stone-950 border border-amber-900/30 rounded-lg overflow-hidden">
+          <div className="flex items-center justify-between flex-wrap gap-3 p-5 border-b border-stone-800">
+            <div className="flex items-center gap-3"><div className="w-9 h-9 rounded flex items-center justify-center bg-amber-500/10 border border-amber-700/30"><Globe size={18} className="text-amber-400"/></div><div><h2 className="text-xl font-bold" style={{fontFamily:'Fraunces,serif'}}>Market Intelligence</h2><div className="text-xs text-stone-500" style={{fontFamily:'JetBrains Mono,monospace'}}>Forward-looking ideas from geopolitical & macro catalysts{miTs&&` · Updated ${fmtAge(miTs)}`}</div></div></div>
+            <div className="flex items-center gap-2 flex-wrap">
+              {mi&&<div className="flex gap-1 bg-stone-900 rounded p-1">{['all','stocks','etfs','long','short'].map(f=><button key={f} onClick={()=>setMiF(f)} className={`text-xs px-2 py-1 rounded transition uppercase tracking-wider ${miF===f?'bg-amber-500/20 text-amber-400':'text-stone-500 hover:text-stone-300'}`} style={{fontFamily:'JetBrains Mono,monospace'}}>{f}</button>)}</div>}
+              <button onClick={()=>loadIdeas(true)} disabled={miL} className="text-xs uppercase tracking-widest px-3 py-2 rounded border border-amber-700/30 hover:bg-amber-500/10 transition flex items-center gap-2 disabled:opacity-40" style={{color:'#e0a94e',fontFamily:'JetBrains Mono,monospace'}}><RefreshCw size={12} className={miL?'animate-spin':''}/>{mi?'Refresh':'Load Ideas'}</button>
+            </div>
+          </div>
+          {miL&&<div className="p-12 text-center"><RefreshCw size={36} className="animate-spin mx-auto mb-3 text-amber-400"/><div className="text-sm text-stone-300">Scanning geopolitical events, upcoming catalysts, and macro signals...</div><div className="text-xs text-stone-500 mt-2" style={{fontFamily:'JetBrains Mono,monospace'}}>This takes 45-90 seconds</div></div>}
+          {miE&&!miL&&<div className="p-6 bg-red-950/20 border-t border-red-900/30 text-sm text-red-300">{miE}</div>}
+          {!mi&&!miL&&!miE&&<div className="p-12 text-center"><Lightbulb size={36} className="mx-auto mb-3 text-stone-600"/><div className="text-sm text-stone-400 mb-4">Generate today's research ideas based on current world events</div><button onClick={()=>loadIdeas(false)} className="px-5 py-2 rounded text-sm font-bold" style={{background:'linear-gradient(135deg,#e0a94e,#c08a2e)',color:'#0c0a09',fontFamily:'JetBrains Mono,monospace'}}>LOAD TODAY'S IDEAS</button></div>}
+          {mi&&!miL&&<div className="p-5 grid md:grid-cols-2 xl:grid-cols-3 gap-3">{filteredIdeas.map((idea,i)=><IdeaCard key={`${idea.ticker}-${i}`} idea={idea} onAnalyze={run}/>)}</div>}
+        </div>
+
+        {/* RECENT */}
+        {recent.length>0&&(
+          <div className="mb-6 bg-stone-900/40 border border-stone-800 rounded-lg p-4">
+            <div className="flex items-center justify-between mb-3"><div className="flex items-center gap-2"><History size={14} className="text-stone-500"/><span className="text-xs uppercase tracking-widest text-stone-500" style={{fontFamily:'JetBrains Mono,monospace'}}>Recent ({recent.length})</span></div><button onClick={clearRecent} className="text-xs text-stone-600 hover:text-red-400 transition flex items-center gap-1" style={{fontFamily:'JetBrains Mono,monospace'}}><X size={12}/>CLEAR</button></div>
+            <div className="flex flex-wrap gap-2">{recent.map(r=><button key={r.ticker} onClick={()=>run(r.ticker)} className="flex items-center gap-2 px-3 py-1.5 bg-stone-900 hover:bg-stone-800 border border-stone-800 rounded text-xs transition" style={{fontFamily:'JetBrains Mono,monospace'}}><span className="font-bold text-stone-200">{r.ticker}</span>{r.isEtf&&<span className="text-stone-600 text-[10px]">ETF</span>}<span className="px-1.5 rounded font-bold" style={{background:`${r.ratingColor}20`,color:r.ratingColor}}>{r.compositeGrade}</span><span className="text-stone-500">{fmtAge(r.timestamp)}</span></button>)}</div>
+          </div>
+        )}
+
+        {loading&&<div className="text-center py-20"><RefreshCw size={48} className="animate-spin mx-auto mb-4 text-amber-400"/><div className="text-lg text-stone-300">Detecting asset type and researching {ticker}...</div><div className="text-xs text-stone-500 mt-2" style={{fontFamily:'JetBrains Mono,monospace'}}>Pulling data from multiple sources. 30-60 seconds.</div></div>}
+
+        {error&&<div className="bg-red-950/40 border border-red-900 rounded-lg p-6 flex items-start gap-3"><AlertTriangle className="text-red-400 flex-shrink-0 mt-0.5"/><div><div className="font-bold text-red-300">Analysis failed</div><div className="text-sm text-red-200 mt-1">{error}</div></div></div>}
+
+        {data&&grades&&!loading&&(
+          <div className="space-y-6">
+            {/* HEADER */}
+            <div className="bg-stone-900/50 border border-stone-800 rounded-lg p-6">
+              <div className="flex flex-wrap justify-between items-start gap-6">
+                <div>
+                  <div className="flex items-center gap-3 mb-1">
+                    <h2 className="text-3xl font-bold" style={{fontFamily:'Fraunces,serif'}}>{data.ticker}</h2>
+                    <span className="text-xl text-stone-400" style={{fontFamily:'Fraunces,serif'}}>{isEtf?data.fundName:data.companyName}</span>
+                    <span className={`text-xs px-2 py-0.5 rounded font-bold ${isEtf?'bg-blue-500/15 text-blue-400 border border-blue-500/30':'bg-emerald-500/15 text-emerald-400 border border-emerald-500/30'}`} style={{fontFamily:'JetBrains Mono,monospace'}}>{isEtf?'ETF':'STOCK'}</span>
+                  </div>
+                  <div className="text-sm text-stone-500 mb-3">{isEtf?`${data.category} · ${data.issuer}`:`${data.sector} · ${data.industry}`}</div>
+                  <div className="text-sm text-stone-300 max-w-2xl leading-relaxed">{data.description}</div>
+                </div>
+                <div className="text-right">
+                  <div className="text-4xl font-bold" style={{fontFamily:'JetBrains Mono,monospace'}}>${data.price?.toFixed(2)}</div>
+                  <div className={`text-sm mt-1 flex items-center justify-end gap-1 ${data.priceChangePercent>=0?'text-green-400':'text-red-400'}`} style={{fontFamily:'JetBrains Mono,monospace'}}>
+                    {data.priceChangePercent>=0?<TrendingUp size={14}/>:<TrendingDown size={14}/>}
+                    {data.priceChange>=0?'+':''}{data.priceChange?.toFixed(2)} ({data.priceChangePercent>=0?'+':''}{data.priceChangePercent?.toFixed(2)}%)
+                  </div>
+                  <div className="text-xs text-stone-500 mt-2" style={{fontFamily:'JetBrains Mono,monospace'}}>
+                    {isEtf?`AUM $${data.cost?.aum>=1000?`${(data.cost.aum/1000).toFixed(2)}T`:`${data.cost?.aum?.toFixed(1)}B`} · ER ${data.cost?.expenseRatio?.toFixed(2)}%`:`Mkt Cap $${data.marketCap>=1000?`${(data.marketCap/1000).toFixed(2)}T`:`${data.marketCap?.toFixed(1)}B`}${data.beta?` · β ${data.beta.toFixed(2)}`:''}`}
+                  </div>
+                </div>
+              </div>
+              <div className="mt-4 pt-4 border-t border-stone-800 flex flex-wrap gap-6 text-xs" style={{fontFamily:'JetBrains Mono,monospace'}}>
+                <div><span className="text-stone-500">52W High </span><span className="text-stone-200">${data.week52High?.toFixed(2)}</span></div>
+                <div><span className="text-stone-500">52W Low </span><span className="text-stone-200">${data.week52Low?.toFixed(2)}</span></div>
+                {isEtf&&data.nav&&<div><span className="text-stone-500">NAV </span><span className="text-stone-200">${data.nav?.toFixed(2)}</span></div>}
+                {isEtf&&data.premium!=null&&<div><span className="text-stone-500">Prem/Disc </span><span className={data.premium>=0?'text-green-400':'text-red-400'}>{data.premium>=0?'+':''}{data.premium?.toFixed(2)}%</span></div>}
+                <div><span className="text-stone-500">Data </span><span className="text-stone-200">{data.dataAsOf}</span></div>
+              </div>
+            </div>
+
+            {/* COMPOSITE */}
+            <div className="bg-gradient-to-br from-stone-900 to-stone-950 border border-stone-800 rounded-lg p-8">
+              <div className="grid lg:grid-cols-2 gap-8 items-center">
+                <div>
+                  <div className="text-xs uppercase tracking-widest text-stone-500 mb-2" style={{fontFamily:'JetBrains Mono,monospace'}}>Composite {isEtf?'ETF':'Quant'} Rating</div>
+                  <div className="text-7xl font-bold mb-2" style={{color:grades.composite.rating.color,fontFamily:'Fraunces,serif'}}>{grades.composite.grade}</div>
+                  <div className="text-2xl font-bold tracking-widest mb-4" style={{color:grades.composite.rating.color,fontFamily:'JetBrains Mono,monospace'}}>{grades.composite.rating.label}</div>
+                  <div className="text-sm text-stone-400 max-w-md leading-relaxed">
+                    Score of {grades.composite.score?.toFixed(1)} reflects the blend of all five {isEtf?'ETF-specific':'stock'} factor grades.
+                  </div>
+                </div>
+                <Gauge score={grades.composite.score} rating={grades.composite.rating} grade={grades.composite.grade}/>
+              </div>
+            </div>
+
+            {/* FACTOR CARDS */}
+            <div className="grid md:grid-cols-5 gap-3">
+              {factors.map(f=><FC key={f.key} icon={f.icon} title={f.title} grade={grades[f.key]?.grade} score={grades[f.key]?.score} description={f.desc} onClick={()=>setAf(af===f.key?null:f.key)} isActive={af===f.key} metricCount={f.count}/>)}
+            </div>
+
+            {/* ========== ETF FACTOR DETAILS ========== */}
+            {isEtf&&af==='cost'&&(
+              <div className="bg-stone-900/50 border border-stone-800 rounded-lg p-6">
+                <h3 className="text-xl font-bold mb-1">Cost & Structure</h3>
+                <p className="text-xs text-stone-500 mb-4">Lower costs and higher liquidity improve long-term compounding.</p>
+                <MR label="Expense Ratio" value={data.cost?.expenseRatio} unit="%" score={grades.cost?.ms[0]}/>
+                <MR label="AUM (Billions)" value={data.cost?.aum} unit="B" score={grades.cost?.ms[1]}/>
+                <MR label="Bid-Ask Spread" value={data.cost?.spread} unit="%" score={grades.cost?.ms[2]}/>
+                <MR label="Tracking Error" value={data.cost?.trackingError} unit="%" score={grades.cost?.ms[3]}/>
+              </div>
+            )}
+
+            {isEtf&&af==='performance'&&(
+              <div className="bg-stone-900/50 border border-stone-800 rounded-lg p-6">
+                <h3 className="text-xl font-bold mb-1">Performance</h3>
+                <p className="text-xs text-stone-500 mb-4">Absolute and relative returns vs {data.performance?.benchmarkName||'benchmark'}.</p>
+                <MR label="1 Year Return" value={data.performance?.return1Y} unit="%" score={grades.performance?.ms[0]} benchmark={data.performance?.benchReturn1Y}/>
+                <MR label="3 Year Annualized" value={data.performance?.return3YAnn} unit="%" score={grades.performance?.ms[1]} benchmark={data.performance?.benchReturn3YAnn}/>
+                <MR label="5 Year Annualized" value={data.performance?.return5YAnn} unit="%" score={grades.performance?.ms[2]}/>
+                <MR label="1Y vs Benchmark" value={data.performance?.return1Y!=null&&data.performance?.benchReturn1Y!=null?data.performance.return1Y-data.performance.benchReturn1Y:null} unit="%" score={grades.performance?.ms[3]} highlight/>
+                <MR label="3Y vs Benchmark" value={data.performance?.return3YAnn!=null&&data.performance?.benchReturn3YAnn!=null?data.performance.return3YAnn-data.performance.benchReturn3YAnn:null} unit="%" score={grades.performance?.ms[4]} highlight/>
+                <div className="mt-4 pt-3 border-t border-stone-800 grid grid-cols-4 gap-4 text-xs" style={{fontFamily:'JetBrains Mono,monospace'}}>
+                  <div><span className="text-stone-500">1M </span><span className={`${data.performance?.return1M>=0?'text-green-400':'text-red-400'}`}>{data.performance?.return1M?.toFixed(2)}%</span></div>
+                  <div><span className="text-stone-500">3M </span><span className={`${data.performance?.return3M>=0?'text-green-400':'text-red-400'}`}>{data.performance?.return3M?.toFixed(2)}%</span></div>
+                  <div><span className="text-stone-500">6M </span><span className={`${data.performance?.return6M>=0?'text-green-400':'text-red-400'}`}>{data.performance?.return6M?.toFixed(2)}%</span></div>
+                  <div><span className="text-stone-500">YTD </span><span className={`${data.performance?.returnYTD>=0?'text-green-400':'text-red-400'}`}>{data.performance?.returnYTD?.toFixed(2)}%</span></div>
+                </div>
+              </div>
+            )}
+
+            {isEtf&&af==='risk'&&(
+              <div className="bg-stone-900/50 border border-stone-800 rounded-lg p-6">
+                <h3 className="text-xl font-bold mb-1">Risk Profile</h3>
+                <p className="text-xs text-stone-500 mb-4">Risk-adjusted return quality and downside protection.</p>
+                <MR label="Sharpe Ratio (3Y)" value={data.risk?.sharpeRatio} score={grades.risk?.ms[0]}/>
+                <MR label="Sortino Ratio (3Y)" value={data.risk?.sortinoRatio} score={grades.risk?.ms[1]}/>
+                <MR label="Max Drawdown" value={data.risk?.maxDrawdown} unit="%" score={grades.risk?.ms[2]}/>
+                <MR label="Standard Deviation (3Y)" value={data.risk?.stdDev} unit="%" score={grades.risk?.ms[3]}/>
+                <MR label="Beta (vs S&P 500)" value={data.risk?.beta} score={grades.risk?.ms[4]}/>
+              </div>
+            )}
+
+            {isEtf&&af==='income'&&(
+              <div className="bg-gradient-to-br from-amber-950/20 to-stone-950 border border-amber-900/30 rounded-lg p-6">
+                <h3 className="text-xl font-bold mb-1">Income Analysis</h3>
+                <p className="text-xs text-stone-500 mb-4">Distribution yield quality and growth trajectory.</p>
+                <MR label="Distribution Yield" value={data.income?.distributionYield} unit="%" score={grades.income?.ms[0]}/>
+                <MR label="Yield Growth (3Y)" value={data.income?.yieldGrowth3Y} unit="%" score={grades.income?.ms[1]}/>
+                <MR label="Yield Growth (5Y)" value={data.income?.yieldGrowth5Y} unit="%" score={grades.income?.ms[2]}/>
+                <MR label="Yield Volatility (CV)" value={data.income?.yieldVolatility} unit="%" score={grades.income?.ms[3]}/>
+                <div className="mt-4 pt-3 border-t border-stone-800 grid grid-cols-3 gap-4 text-xs" style={{fontFamily:'JetBrains Mono,monospace'}}>
+                  <div><span className="text-stone-500">SEC Yield </span><span className="text-stone-200">{data.income?.secYield?.toFixed(2)||'N/A'}%</span></div>
+                  <div><span className="text-stone-500">Frequency </span><span className="text-stone-200">{data.income?.distributionFrequency||'N/A'}</span></div>
+                  <div><span className="text-stone-500">Last Dist </span><span className="text-stone-200">${data.income?.lastDistribution?.toFixed(4)||'N/A'}</span></div>
+                </div>
+              </div>
+            )}
+
+            {isEtf&&af==='holdings'&&(
+              <div className="bg-stone-900/50 border border-stone-800 rounded-lg p-6">
+                <h3 className="text-xl font-bold mb-1">Holdings Quality</h3>
+                <p className="text-xs text-stone-500 mb-4">Weighted-average fundamentals and portfolio concentration.</p>
+                <MR label="Wtd ROE" value={data.holdings?.wtdRoe} unit="%" score={grades.holdings?.ms[0]}/>
+                <MR label="Wtd ROIC" value={data.holdings?.wtdRoic} unit="%" score={grades.holdings?.ms[1]}/>
+                <MR label="Wtd FCF Margin" value={data.holdings?.wtdFcfMargin} unit="%" score={grades.holdings?.ms[2]}/>
+                <MR label="Top 10 Concentration" value={data.holdings?.concentration} unit="%" score={grades.holdings?.ms[3]}/>
+                <MR label="Number of Holdings" value={data.holdings?.numHoldings} score={grades.holdings?.ms[4]}/>
+                {data.holdings?.wtdPe&&<div className="mt-3 grid grid-cols-2 gap-4 text-xs" style={{fontFamily:'JetBrains Mono,monospace'}}><div><span className="text-stone-500">Wtd P/E </span><span className="text-stone-200">{data.holdings.wtdPe?.toFixed(1)}</span></div><div><span className="text-stone-500">Wtd P/B </span><span className="text-stone-200">{data.holdings.wtdPb?.toFixed(1)}</span></div><div><span className="text-stone-500">Turnover </span><span className="text-stone-200">{data.holdings.turnover?.toFixed(0)||'N/A'}%</span></div></div>}
+
+                {data.holdings?.topHoldings?.length>0&&(
+                  <div className="mt-5 pt-4 border-t border-stone-800">
+                    <div className="text-xs uppercase tracking-widest text-stone-500 mb-3" style={{fontFamily:'JetBrains Mono,monospace'}}>Top Holdings</div>
+                    <div className="space-y-1">{data.holdings.topHoldings.map((h,i)=>(
+                      <div key={i} className="flex items-center justify-between py-1.5 text-xs">
+                        <div className="flex items-center gap-2"><span className="text-stone-600 w-5" style={{fontFamily:'JetBrains Mono,monospace'}}>{i+1}</span><span className="text-stone-200 font-bold" style={{fontFamily:'JetBrains Mono,monospace'}}>{h.ticker||''}</span><span className="text-stone-400 truncate max-w-[200px]">{h.name}</span></div>
+                        <span className="text-stone-300" style={{fontFamily:'JetBrains Mono,monospace'}}>{h.weight?.toFixed(2)}%</span>
+                      </div>
+                    ))}</div>
+                  </div>
+                )}
+
+                {data.holdings?.sectorBreakdown?.length>0&&(
+                  <div className="mt-5 pt-4 border-t border-stone-800">
+                    <div className="text-xs uppercase tracking-widest text-stone-500 mb-3" style={{fontFamily:'JetBrains Mono,monospace'}}>Sector Allocation</div>
+                    <SectorBar sectors={data.holdings.sectorBreakdown}/>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ========== STOCK FACTOR DETAILS ========== */}
+            {!isEtf&&af==='valuation'&&(
+              <div className="bg-stone-900/50 border border-stone-800 rounded-lg p-6">
+                <h3 className="text-xl font-bold mb-1">Valuation Breakdown</h3><p className="text-xs text-stone-500 mb-4">Lower multiples score better.</p>
+                <MR label="P/E (Trailing)" value={data.valuation?.peTrailing} score={grades.valuation?.ms[0]} benchmark={data.valuation?.sectorPe}/><MR label="P/E (Forward)" value={data.valuation?.peForward} score={grades.valuation?.ms[1]}/><MR label="PEG Ratio" value={data.valuation?.pegRatio} score={grades.valuation?.ms[2]}/><MR label="Price / Sales" value={data.valuation?.psRatio} score={grades.valuation?.ms[3]} benchmark={data.valuation?.sectorPs}/><MR label="Price / Book" value={data.valuation?.pbRatio} score={grades.valuation?.ms[4]}/><MR label="EV / EBITDA" value={data.valuation?.evEbitda} score={grades.valuation?.ms[5]}/><MR label="Price / FCF" value={data.valuation?.pFcf} score={grades.valuation?.ms[6]}/>
+              </div>
+            )}
+            {!isEtf&&af==='growth'&&(
+              <div className="bg-stone-900/50 border border-stone-800 rounded-lg p-6">
+                <h3 className="text-xl font-bold mb-1">Growth Breakdown</h3><p className="text-xs text-stone-500 mb-4">All figures annualized where applicable.</p>
+                <MR label="Revenue Growth YoY" value={data.growth?.revenueGrowthYoY} unit="%" score={grades.growth?.ms[0]}/><MR label="Revenue 3yr CAGR" value={data.growth?.revenueGrowth3YAvg} unit="%" score={grades.growth?.ms[1]}/><MR label="Revenue 5yr CAGR" value={data.growth?.revenueGrowth5YAvg} unit="%" score={grades.growth?.ms[2]}/><MR label="EPS Growth YoY" value={data.growth?.epsGrowthYoY} unit="%" score={grades.growth?.ms[3]}/><MR label="EPS Growth (Forward)" value={data.growth?.epsGrowthForward} unit="%" score={grades.growth?.ms[4]}/><MR label="FCF Growth YoY" value={data.growth?.fcfGrowthYoY} unit="%" score={grades.growth?.ms[5]}/><MR label="EBITDA Growth YoY" value={data.growth?.ebitdaGrowthYoY} unit="%" score={grades.growth?.ms[6]}/>
+              </div>
+            )}
+            {!isEtf&&af==='profitability'&&(
+              <div className="bg-stone-900/50 border border-stone-800 rounded-lg p-6">
+                <h3 className="text-xl font-bold mb-1">Profitability Breakdown</h3><p className="text-xs text-stone-500 mb-4">Margins show pricing power. Returns on capital show efficiency.</p>
+                <MR label="Gross Margin" value={data.profitability?.grossMargin} unit="%" score={grades.profitability?.ms[0]}/><MR label="Operating Margin" value={data.profitability?.operatingMargin} unit="%" score={grades.profitability?.ms[1]}/><MR label="Net Margin" value={data.profitability?.netMargin} unit="%" score={grades.profitability?.ms[2]}/><MR label="Return on Equity" value={data.profitability?.roe} unit="%" score={grades.profitability?.ms[3]}/><MR label="Return on Assets" value={data.profitability?.roa} unit="%" score={grades.profitability?.ms[4]}/><MR label="Return on Invested Capital" value={data.profitability?.roic} unit="%" score={grades.profitability?.ms[5]}/><MR label="FCF Margin" value={data.profitability?.fcfMargin} unit="%" score={grades.profitability?.ms[6]}/>
+              </div>
+            )}
+            {!isEtf&&af==='momentum'&&(
+              <div className="bg-stone-900/50 border border-stone-800 rounded-lg p-6">
+                <h3 className="text-xl font-bold mb-1">Momentum Breakdown</h3><p className="text-xs text-stone-500 mb-4">Absolute and relative price performance.</p>
+                <MR label="1 Month Return" value={data.momentum?.return1M} unit="%"/><MR label="3 Month Return" value={data.momentum?.return3M} unit="%" score={grades.momentum?.ms[0]}/><MR label="6 Month Return" value={data.momentum?.return6M} unit="%" score={grades.momentum?.ms[1]}/><MR label="9 Month Return" value={data.momentum?.return9M} unit="%" score={grades.momentum?.ms[2]}/><MR label="1 Year Return" value={data.momentum?.return1Y} unit="%" score={grades.momentum?.ms[3]}/><MR label="YTD Return" value={data.momentum?.returnYTD} unit="%"/><MR label="1Y vs S&P 500" value={data.momentum?.return1Y!=null&&data.momentum?.sp500Return1Y!=null?data.momentum.return1Y-data.momentum.sp500Return1Y:null} unit="%" score={grades.momentum?.ms[4]} highlight/>
+              </div>
+            )}
+            {!isEtf&&af==='revisions'&&(
+              <div className="bg-stone-900/50 border border-stone-800 rounded-lg p-6">
+                <h3 className="text-xl font-bold mb-1">EPS Revisions</h3><p className="text-xs text-stone-500 mb-4">Analyst estimate changes in the last 90 days.</p>
+                <div className="grid grid-cols-2 gap-4 mb-4"><div className="bg-green-950/30 border border-green-900/50 rounded p-4"><div className="text-xs uppercase tracking-widest text-green-400 mb-1" style={{fontFamily:'JetBrains Mono,monospace'}}>Upward</div><div className="text-3xl font-bold text-green-300" style={{fontFamily:'Fraunces,serif'}}>{data.revisions?.upwardRevisions90d}</div></div><div className="bg-red-950/30 border border-red-900/50 rounded p-4"><div className="text-xs uppercase tracking-widest text-red-400 mb-1" style={{fontFamily:'JetBrains Mono,monospace'}}>Downward</div><div className="text-3xl font-bold text-red-300" style={{fontFamily:'Fraunces,serif'}}>{data.revisions?.downwardRevisions90d}</div></div></div>
+                <MR label="FY1 EPS Change (90d)" value={data.revisions?.fy1EpsRevisionPercent} unit="%" score={grades.revisions?.ms[1]}/><MR label="FY2 EPS Change (90d)" value={data.revisions?.fy2EpsRevisionPercent} unit="%" score={grades.revisions?.ms[2]}/>
+              </div>
+            )}
+
+            {/* STOCK DIVIDEND */}
+            {!isEtf&&data.dividend&&data.dividend.yield>0&&(
+              <div className="bg-gradient-to-br from-amber-950/20 to-stone-950 border border-amber-900/30 rounded-lg p-6">
+                <div className="flex items-center gap-2 mb-4"><DollarSign size={20} className="text-amber-400"/><h3 className="text-xl font-bold">Income Analysis</h3></div>
+                <div className="grid md:grid-cols-4 gap-4 mb-4">
+                  <div className="bg-stone-900/50 rounded p-4"><div className="text-xs uppercase tracking-widest text-stone-500 mb-1" style={{fontFamily:'JetBrains Mono,monospace'}}>Yield</div><div className="text-2xl font-bold text-amber-400" style={{fontFamily:'Fraunces,serif'}}>{data.dividend.yield?.toFixed(2)}%</div></div>
+                  <div className="bg-stone-900/50 rounded p-4"><div className="text-xs uppercase tracking-widest text-stone-500 mb-1" style={{fontFamily:'JetBrains Mono,monospace'}}>Annual Div</div><div className="text-2xl font-bold" style={{fontFamily:'Fraunces,serif'}}>${data.dividend.annualDividend?.toFixed(2)}</div></div>
+                  <div className="bg-stone-900/50 rounded p-4"><div className="text-xs uppercase tracking-widest text-stone-500 mb-1" style={{fontFamily:'JetBrains Mono,monospace'}}>Payout Ratio</div><div className="text-2xl font-bold" style={{fontFamily:'Fraunces,serif'}}>{data.dividend.payoutRatio?.toFixed(0)}%</div></div>
+                  <div className="bg-stone-900/50 rounded p-4"><div className="text-xs uppercase tracking-widest text-stone-500 mb-1" style={{fontFamily:'JetBrains Mono,monospace'}}>Growth Streak</div><div className="text-2xl font-bold" style={{fontFamily:'Fraunces,serif'}}>{data.dividend.consecutiveYearsGrowth||0}y</div></div>
+                </div>
+              </div>
+            )}
+
+            {/* ANALYST CONSENSUS (stocks only) */}
+            {!isEtf&&data.analyst&&(
+              <div className="bg-stone-900/50 border border-stone-800 rounded-lg p-6">
+                <h3 className="text-xl font-bold mb-4">Wall Street Consensus</h3>
+                <div className="grid md:grid-cols-3 gap-6 mb-6">
+                  <div><div className="text-xs uppercase tracking-widest text-stone-500 mb-1" style={{fontFamily:'JetBrains Mono,monospace'}}>Consensus</div><div className="text-2xl font-bold" style={{fontFamily:'Fraunces,serif',color:data.analyst.consensus?.includes('Buy')?'#86c26a':data.analyst.consensus?.includes('Sell')?'#ef4444':'#e0a94e'}}>{data.analyst.consensus}</div><div className="text-xs text-stone-500 mt-1" style={{fontFamily:'JetBrains Mono,monospace'}}>{data.analyst.numAnalysts} analysts</div></div>
+                  <div><div className="text-xs uppercase tracking-widest text-stone-500 mb-1" style={{fontFamily:'JetBrains Mono,monospace'}}>Price Target</div><div className="text-2xl font-bold" style={{fontFamily:'JetBrains Mono,monospace'}}>${data.analyst.priceTarget?.toFixed(2)}</div><div className={`text-xs mt-1 ${(data.analyst.priceTarget-data.price)>0?'text-green-400':'text-red-400'}`} style={{fontFamily:'JetBrains Mono,monospace'}}>{(((data.analyst.priceTarget-data.price)/data.price)*100).toFixed(1)}% upside</div></div>
+                  <div><div className="text-xs uppercase tracking-widest text-stone-500 mb-1" style={{fontFamily:'JetBrains Mono,monospace'}}>Target Range</div><div className="text-sm" style={{fontFamily:'JetBrains Mono,monospace'}}><span className="text-red-400">${data.analyst.priceTargetLow?.toFixed(2)}</span><span className="text-stone-500 mx-2">to</span><span className="text-green-400">${data.analyst.priceTargetHigh?.toFixed(2)}</span></div></div>
+                </div>
+                <AnalystBar analyst={data.analyst}/>
+              </div>
+            )}
+
+            {/* COMPETITOR ETFs */}
+            {isEtf&&data.competitorETFs?.length>0&&(
+              <div className="bg-stone-900/30 border border-stone-800 rounded-lg p-5">
+                <div className="text-xs uppercase tracking-widest text-stone-500 mb-3" style={{fontFamily:'JetBrains Mono,monospace'}}>Similar ETFs</div>
+                <div className="flex flex-wrap gap-2">{data.competitorETFs.map(t=><button key={t} onClick={()=>run(t)} className="px-4 py-2 text-xs bg-stone-900 hover:bg-stone-800 border border-stone-800 rounded transition font-bold" style={{fontFamily:'JetBrains Mono,monospace'}}>{t}</button>)}</div>
+              </div>
+            )}
+
+            {/* STRENGTHS & RISKS */}
+            <div className="grid md:grid-cols-2 gap-4">
+              <div className="bg-green-950/20 border border-green-900/30 rounded-lg p-6">
+                <div className="flex items-center gap-2 mb-4"><Shield size={18} className="text-green-400"/><h3 className="text-lg font-bold text-green-300">Strengths</h3></div>
+                <ul className="space-y-2">{data.strengths?.map((s,i)=><li key={i} className="text-sm text-stone-300 pl-4 relative"><span className="absolute left-0 text-green-400">▸</span>{s}</li>)}</ul>
+              </div>
+              <div className="bg-red-950/20 border border-red-900/30 rounded-lg p-6">
+                <div className="flex items-center gap-2 mb-4"><AlertTriangle size={18} className="text-red-400"/><h3 className="text-lg font-bold text-red-300">Risks</h3></div>
+                <ul className="space-y-2">{data.risks?.map((r,i)=><li key={i} className="text-sm text-stone-300 pl-4 relative"><span className="absolute left-0 text-red-400">▸</span>{r}</li>)}</ul>
+              </div>
+            </div>
+
+            {/* STOCK KEY METRICS */}
+            {!isEtf&&data.keyMetrics&&(
+              <div className="bg-stone-900/30 border border-stone-800 rounded-lg p-5">
+                <div className="text-xs uppercase tracking-widest text-stone-500 mb-3" style={{fontFamily:'JetBrains Mono,monospace'}}>Balance Sheet & Ownership</div>
+                <div className="grid md:grid-cols-5 gap-4 text-sm" style={{fontFamily:'JetBrains Mono,monospace'}}>
+                  <div><span className="text-stone-500">D/E </span><span className="text-stone-200">{data.keyMetrics.debtToEquity?.toFixed(2)??'N/A'}</span></div>
+                  <div><span className="text-stone-500">Current </span><span className="text-stone-200">{data.keyMetrics.currentRatio?.toFixed(2)??'N/A'}</span></div>
+                  <div><span className="text-stone-500">Short Int </span><span className="text-stone-200">{data.keyMetrics.shortInterestPercent?.toFixed(1)??'N/A'}%</span></div>
+                  <div><span className="text-stone-500">Inst Own </span><span className="text-stone-200">{data.keyMetrics.institutionalOwnership?.toFixed(1)??'N/A'}%</span></div>
+                  <div><span className="text-stone-500">Insider </span><span className="text-stone-200">{data.keyMetrics.insiderOwnership?.toFixed(2)??'N/A'}%</span></div>
+                </div>
+              </div>
+            )}
+
+            <div className="text-center text-xs text-stone-600 py-4" style={{fontFamily:'JetBrains Mono,monospace'}}>Data sourced via live web search. Not investment advice. Verify numbers before trading.</div>
+          </div>
+        )}
+
+        {!data&&!loading&&!error&&(
+          <div className="text-center py-12 text-stone-500"><BarChart3 size={40} className="mx-auto mb-3 opacity-30"/><div className="text-sm">Enter any stock or ETF ticker to generate a quant rating</div></div>
+        )}
+      </main>
+    </div>
+  );
+};
+
+export default App;
